@@ -1,6 +1,6 @@
 use crate::JsonError;
 use core::convert::TryFrom;
-use libipld_base::cid::Cid;
+use libipld_base::cid::{self, Cid};
 use libipld_base::ipld::Ipld;
 use serde::{de, ser, Deserialize, Serialize};
 use serde_json::ser::Serializer;
@@ -21,6 +21,28 @@ pub fn decode(data: &[u8]) -> Result<Ipld, JsonError> {
     let mut de = serde_json::Deserializer::from_slice(&data);
     Ok(deserialize(&mut de)?)
 }
+
+/// Trouble deserializing a `{ "/": "$cid" }` from json.
+#[derive(Debug)]
+enum InvalidLink {
+    InvalidEncoding(String, base64::DecodeError),
+    InvalidCid(String, cid::Error),
+}
+
+impl fmt::Display for InvalidLink {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            InvalidLink::InvalidEncoding(s, e) => {
+                write!(fmt, "invalid base64 encoding in link {:?}: {}", s, e)
+            },
+            InvalidLink::InvalidCid(s, e) => {
+                write!(fmt, "invalid cid in link {:?}: {}", s, e)
+            }
+        }
+    }
+}
+
+impl std::error::Error for InvalidLink {}
 
 fn serialize<S>(ipld: &Ipld, ser: S) -> Result<S::Ok, S::Error>
 where
@@ -184,15 +206,35 @@ impl<'de> de::Visitor<'de> for JSONVisitor {
             values.push((key, value));
         }
 
+
         // JSON Object represents IPLD Link if it is `{ "/": "...." }` therefor
         // we valiadet if that is the case here.
-        if let Some((key, WrapperOwned(Ipld::String(value)))) = values.first() {
+        if let Some((key, WrapperOwned(Ipld::String(_)))) = values.first() {
             if key == LINK_KEY && values.len() == 1 {
                 // TODO: Find out what is the expected behavior in cases where
                 // value is not a valid CID (or base64 endode string here). For
                 // now treat it as some other JSON Object.
-                let link = base64::decode(value).unwrap();
-                let cid = Cid::try_from(link).unwrap();
+
+                let value = if let Some((_, WrapperOwned(Ipld::String(value)))) = values.pop() {
+                    value
+                } else {
+                    unreachable!("IPLD variant already checked and values.len already checked");
+                };
+
+                let raw_cid = match base64::decode(&value) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        return Err(serde::de::Error::custom(InvalidLink::InvalidEncoding(value, e)));
+                    }
+                };
+
+                let cid = match Cid::try_from(raw_cid) {
+                    Ok(cid) => cid,
+                    Err(e) => {
+                        return Err(serde::de::Error::custom(InvalidLink::InvalidCid(value, e)));
+                    }
+                };
+
                 return Ok(Ipld::Link(cid));
             }
         }
@@ -265,5 +307,14 @@ mod tests {
 
         let contact_decoded: Ipld = decode(&contact_encoded).unwrap();
         assert_eq!(contact_decoded, contact);
+    }
+
+    #[test]
+    fn decode_invalid() {
+        let input = r#"{ "/": "invalidcid" }"#;
+
+        // this should error:
+        // invalid base64 encoding in link "invalidcid": Invalid last symbol 100, offset 9. at line 1 column 21
+        decode(input.as_bytes()).unwrap_err();
     }
 }
