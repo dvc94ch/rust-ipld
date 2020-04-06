@@ -34,10 +34,8 @@ impl fmt::Display for InvalidLink {
         match self {
             InvalidLink::InvalidEncoding(s, e) => {
                 write!(fmt, "invalid base64 encoding in link {:?}: {}", s, e)
-            },
-            InvalidLink::InvalidCid(s, e) => {
-                write!(fmt, "invalid cid in link {:?}: {}", s, e)
             }
+            InvalidLink::InvalidCid(s, e) => write!(fmt, "invalid cid in link {:?}: {}", s, e),
         }
     }
 }
@@ -206,7 +204,6 @@ impl<'de> de::Visitor<'de> for JSONVisitor {
             values.push((key, value));
         }
 
-
         // JSON Object represents IPLD Link if it is `{ "/": "...." }` therefor
         // we valiadet if that is the case here.
         if let Some((key, WrapperOwned(Ipld::String(_)))) = values.first() {
@@ -224,7 +221,9 @@ impl<'de> de::Visitor<'de> for JSONVisitor {
                 let raw_cid = match base64::decode(&value) {
                     Ok(bytes) => bytes,
                     Err(e) => {
-                        return Err(serde::de::Error::custom(InvalidLink::InvalidEncoding(value, e)));
+                        return Err(serde::de::Error::custom(InvalidLink::InvalidEncoding(
+                            value, e,
+                        )));
                     }
                 };
 
